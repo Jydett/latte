@@ -33,7 +33,16 @@ class ObjectTypeInterpreter extends BasicInterpreter {
         final AbstractInsnNode insn, final BasicValue value1, final BasicValue value2)
         throws AnalyzerException {
         if (insn.getOpcode() == Opcodes.AALOAD) {
-            return new BasicValue(value1.getType().getElementType());
+            Type type = value1.getType();
+            String internalName = type.getInternalName();
+            if (internalName.startsWith("[[")) {
+                try {
+                    return new BasicValue(Type.getType(internalName.substring(1)));
+                } catch (IllegalArgumentException e) {
+                    System.err.println("susex");
+                }
+            }
+            return new BasicValue(type.getElementType());
         }
         return super.binaryOperation(insn, value1, value2);
     }

@@ -140,154 +140,200 @@ public class App {
 
     public static void handleClass(Path input, Path output, boolean forceOverwrite, TypeVerifier typeVerifier) throws Exception {
         InputStream fi = Files.newInputStream(input);
-        ClassReader cr = new ClassReader(fi);
+        ClassReader cr;
+        try {
+            cr = new ClassReader(fi);
 
-        ClassNode cn = new ClassNode();
-        
-        cr.accept(cn, ClassReader.EXPAND_FRAMES);
+            ClassNode cn = new ClassNode();
 
-        System.out.println(String.format("Examining class %s", cn.name));
-        for (MethodNode methodNode : cn.methods) {
-            Analyzer<BasicValue> analyzer = new Analyzer<BasicValue>(new ObjectTypeInterpreter());
-            try {
-                analyzer.analyze(cn.name, methodNode);
-            }
-            catch (AnalyzerException e) {
-                System.err.println(String.format("\tFailed to examine method %s.%s: %s", cn.name, methodNode.name, e.toString()));
-                continue;
-            }
+            cr.accept(cn, ClassReader.EXPAND_FRAMES);
 
-            System.out.println(String.format("\tExamining method %s", methodNode.name));
-            Frame<BasicValue>[] frames = analyzer.getFrames();
-            AbstractInsnNode[] instructions=  methodNode.instructions.toArray();
-
-            if (methodNode.localVariables == null) {
-                methodNode.localVariables = new ArrayList<LocalVariableNode>();
-            }
-            else if (methodNode.localVariables.size() > 0) {
-                System.err.println(String.format("\tMethod %s already contains local variables, skipping...", methodNode.name));
-                continue;
-            }
-            Type methodType = Type.getType(methodNode.desc);
-            boolean isMethodStatic = (methodNode.access & Opcodes.ACC_STATIC) == Opcodes.ACC_STATIC;
-            LabelNode last = null;
-            List<Type> stackFrameLocals = new ArrayList<Type>();
-            if (!isMethodStatic || methodType.getArgumentTypes().length != 0) {
-                LabelNode first = new LabelNode();
-                last = new LabelNode();
-
-                methodNode.instructions.insert(first);
-                methodNode.instructions.add(last);
-
-                int index = 0;
-                if (!isMethodStatic) {
-                    Type thisType = Type.getObjectType(cn.name);
-                    stackFrameLocals.add(thisType);
-                    LocalVariableNode thisVar = new LocalVariableNode("this", thisType.toString(), null, first, last, index);
-                    methodNode.localVariables.add(thisVar);
-                    index++;
+//            System.out.println(String.format("Examining class %s", cn.name));
+            out:
+            for (MethodNode methodNode : cn.methods) {
+                Analyzer<BasicValue> analyzer = new Analyzer<BasicValue>(new ObjectTypeInterpreter());
+                try {
+                    analyzer.analyze(cn.name, methodNode);
                 }
-                Type[] argTypes = methodType.getArgumentTypes();
-                for (int i = 0; i < argTypes.length; i++) {
-                    Type argType = argTypes[i];
-                    stackFrameLocals.add(argType);
-                    LocalVariableNode argVar = new LocalVariableNode(String.format("arg%d", i+1), argType.getDescriptor(), null, first, last, index);
-                    methodNode.localVariables.add(argVar);
-                    index += argType.getSize();
+                catch (AnalyzerException e) {
+                    System.err.println(String.format("\tFailed to examine method %s.%s():\n\t%s", cn.name, methodNode.name, e.toString()));
+                    e.printStackTrace();
+                    continue;
                 }
-            }
 
-            int localVarNum = 1;
-            for (int i = 0; i < instructions.length; i++) {
-                Frame<BasicValue> frame = frames[i];
-                
-                if (instructions[i].getType() == AbstractInsnNode.VAR_INSN) {
-                    int opcode = instructions[i].getOpcode();
-                    if (
-                        opcode == Opcodes.ASTORE ||
-                        opcode == Opcodes.ISTORE ||
-                        opcode == Opcodes.DSTORE ||
-                        opcode == Opcodes.FSTORE ||
-                        opcode == Opcodes.LSTORE
-                    ) {
-                        VarInsnNode insn = (VarInsnNode)instructions[i];
-                        BasicValue newValue = frame.getStack(frame.getStackSize() - 1);
-                    
-                        if (last == null) {
-                            last = new LabelNode();
-                            methodNode.instructions.add(last);
-                        }
+//                System.out.println(String.format("\tExamining method %s", methodNode.name));
+                Frame<BasicValue>[] frames = analyzer.getFrames();
+                AbstractInsnNode[] instructions=  methodNode.instructions.toArray();
 
-
-                        AbstractInsnNode next = insn.getNext();
-                        LabelNode varStart;
-                        if (next.getType() == AbstractInsnNode.LABEL) {
-                            varStart = (LabelNode)next;
-                        }
-                        else {
-                            varStart = new LabelNode();
-                        }
-                        boolean exists = false;
-
-                        for (LocalVariableNode var : methodNode.localVariables) {
-                            if (var.index == insn.var && var.end == last) {
-                                if (!typeVerifier.isAssignableFrom(var.desc, newValue)) {
-                                    var.end = varStart;
+                boolean isMethodStatic = (methodNode.access & Opcodes.ACC_STATIC) == Opcodes.ACC_STATIC;
+                if (methodNode.localVariables == null) {
+                    methodNode.localVariables = new ArrayList<LocalVariableNode>();
+                }
+                else if (methodNode.localVariables.size() > 0) {
+                    if (! isMethodStatic) {
+                        for (LocalVariableNode localVariable : methodNode.localVariables) {
+                            if (localVariable.index == 0) {
+                                if (!localVariable.name.equals("this")) {
+                                    System.err.println("Local 0 should be this !!!!");
+                                    methodNode.name = "this";
+                                    continue out;
                                 }
-                                else {
-                                    exists = true;
-                                }
-                                break;
+//                    System.err.println(String.format("\tMethod %s already contains local variables, skipping...", methodNode.name));
+                                continue out;
                             }
                         }
-                        if (exists) {
-                            continue;
+                        LabelNode min = null;
+                        LabelNode max = null;
+                        for (AbstractInsnNode instruction : methodNode.instructions) {
+                            if (instruction instanceof LabelNode labelNode) {
+                                if (min == null) {
+                                    min = labelNode;
+                                }
+                                max = labelNode;
+                            }
                         }
-                        
-                        if (!varStart.equals(next)) {
-                            methodNode.instructions.insert(insn, varStart);
-                        }
-    
-                        LocalVariableNode localVar = new LocalVariableNode("local"+localVarNum++, newValue.getType().getDescriptor(), null, varStart, last, insn.var);
-                        methodNode.localVariables.add(localVar);
+                        methodNode.localVariables.add(0, new LocalVariableNode(
+                                "this", "L" + cn.name + ";", null,
+                                min, max, 0
+                        ));
+                    }
+                    continue;
+                }
+                Type methodType = Type.getType(methodNode.desc);
+                LabelNode last = null;
+                List<Type> stackFrameLocals = new ArrayList<>();
+                if (!isMethodStatic || methodType.getArgumentTypes().length != 0) {
+                    LabelNode first = new LabelNode();
+                    last = new LabelNode();
+
+                    methodNode.instructions.insert(first);
+                    methodNode.instructions.add(last);
+
+                    int index = 0;
+                    if (!isMethodStatic) {
+                        Type thisType = Type.getObjectType(cn.name);
+                        stackFrameLocals.add(thisType);
+                        LocalVariableNode thisVar = new LocalVariableNode("this", thisType.toString(), null, first, last, index);
+                        methodNode.localVariables.add(thisVar);
+                        index++;
+                    }
+                    Type[] argTypes = methodType.getArgumentTypes();
+                    for (int i = 0; i < argTypes.length; i++) {
+                        Type argType = argTypes[i];
+                        stackFrameLocals.add(argType);
+                        LocalVariableNode argVar = new LocalVariableNode(String.format("arg%d", i+1), argType.getDescriptor(), null, first, last, index);
+                        methodNode.localVariables.add(argVar);
+                        index += argType.getSize();
                     }
                 }
-                else if (instructions[i].getType() == AbstractInsnNode.LABEL) {
-                    for (LocalVariableNode localVar : methodNode.localVariables) {
-                        if (localVar.end == last &&
-                            (localVar.index >= frame.getLocals() ||
-                             frame.getLocal(localVar.index).getType() == null)
-                            ) {
-                            localVar.end = (LabelNode)instructions[i];
-                        }
+
+                int localVarNum = 1;
+                for (int i = 0; i < instructions.length; i++) {
+                    Frame<BasicValue> frame = frames[i];
+                    if (frame == null) {
+                        System.err.println("Frame is null ??");
+                        continue out;
                     }
-                }
-                else if (instructions[i].getType() == AbstractInsnNode.FRAME) {
-                    FrameNode fn = ((FrameNode)instructions[i]);
-                    for (LocalVariableNode localVar : methodNode.localVariables) {
-                        if (localVar.end == last && 
-                            localVar.desc.equals(ObjectTypeInterpreter.NULL_TYPE.getDescriptor()))
-                        {
-                            int stackMapLocalIndex = localVar.index;
-                            for (int j = 0; j < fn.local.size(); j++) {
-                                Object stackMapLocal = fn.local.get(j);
-                                if (j == stackMapLocalIndex) {
-                                    /*
-                                     * Since this local var is null, it should be safe
-                                     * to assume that this is always an object (not a primitive)
-                                     */
-                                    localVar.desc = Type.getObjectType((String)stackMapLocal).getDescriptor();
+
+                    if (instructions[i].getType() == AbstractInsnNode.VAR_INSN) {
+                        int opcode = instructions[i].getOpcode();
+                        if (
+                            opcode == Opcodes.ASTORE ||
+                            opcode == Opcodes.ISTORE ||
+                            opcode == Opcodes.DSTORE ||
+                            opcode == Opcodes.FSTORE ||
+                            opcode == Opcodes.LSTORE
+                        ) {
+                            VarInsnNode insn = (VarInsnNode)instructions[i];
+                            BasicValue newValue = frame.getStack(frame.getStackSize() - 1);
+
+                            if (last == null) {
+                                last = new LabelNode();
+                                methodNode.instructions.add(last);
+                            }
+
+
+                            AbstractInsnNode next = insn.getNext();
+                            LabelNode varStart;
+                            if (next.getType() == AbstractInsnNode.LABEL) {
+                                varStart = (LabelNode)next;
+                            }
+                            else {
+                                varStart = new LabelNode();
+                            }
+                            boolean exists = false;
+
+                            for (LocalVariableNode var : methodNode.localVariables) {
+                                if (var.index == insn.var && var.end == last) {
+                                    if (!typeVerifier.isAssignableFrom(var.desc, newValue)) {
+                                        var.end = varStart;
+                                    }
+                                    else {
+                                        exists = true;
+                                    }
                                     break;
                                 }
-                                if (stackMapLocal instanceof Integer) {
-                                    if (stackMapLocal == Opcodes.LONG || stackMapLocal == Opcodes.DOUBLE) {
+                            }
+                            if (exists) {
+                                continue;
+                            }
+                            String descriptor = newValue.getType().getDescriptor();
+                            if (descriptor.equalsIgnoreCase("V")) {
+                                System.err.println("Local is void !!");
+                                continue;
+                            }
+
+                            if (!varStart.equals(next)) {
+                                methodNode.instructions.insert(insn, varStart);
+                            }
+
+
+                            LocalVariableNode localVar = new LocalVariableNode("local"+localVarNum++, descriptor, null, varStart, last, insn.var);
+                            methodNode.localVariables.add(localVar);
+                        }
+                    }
+                    else if (instructions[i].getType() == AbstractInsnNode.LABEL) {
+                        for (LocalVariableNode localVar : methodNode.localVariables) {
+                            if (localVar.end == last &&
+                                (localVar.index >= frame.getLocals() ||
+                                 frame.getLocal(localVar.index).getType() == null)
+                                ) {
+                                localVar.end = (LabelNode)instructions[i];
+                            }
+                        }
+                    }
+                    else if (instructions[i].getType() == AbstractInsnNode.FRAME) {
+                        FrameNode fn = ((FrameNode)instructions[i]);
+                        for (LocalVariableNode localVar : methodNode.localVariables) {
+                            if (localVar.end == last &&
+                                localVar.desc.equals(ObjectTypeInterpreter.NULL_TYPE.getDescriptor()))
+                            {
+                                int stackMapLocalIndex = localVar.index;
+                                for (int j = 0; j < fn.local.size(); j++) {
+                                    Object stackMapLocal = fn.local.get(j);
+                                    if (j == stackMapLocalIndex) {
                                         /*
-                                         * This is necessary to account for the fact that long and double
-                                         * vars occupy 2 slots in the local variables table, but only one
-                                         * in the stack map frame locals.
-                                         * https://asm.ow2.io/javadoc/org/objectweb/asm/tree/FrameNode.html#%3Cinit%3E(int,int,java.lang.Object%5B%5D,int,java.lang.Object%5B%5D)
+                                         * Since this local var is null, it should be safe
+                                         * to assume that this is always an object (not a primitive)
                                          */
-                                        stackMapLocalIndex--;
+                                        try {
+                                            localVar.desc = Type.getObjectType((String)stackMapLocal).getDescriptor();
+                                        } catch (ClassCastException e) {
+                                            System.err.println("This is very bad");
+                                            break out;
+                                        }
+                                        break;
+                                    }
+                                    if (stackMapLocal instanceof Integer) {
+                                        if (stackMapLocal == Opcodes.LONG || stackMapLocal == Opcodes.DOUBLE) {
+                                            /*
+                                             * This is necessary to account for the fact that long and double
+                                             * vars occupy 2 slots in the local variables table, but only one
+                                             * in the stack map frame locals.
+                                             * https://asm.ow2.io/javadoc/org/objectweb/asm/tree/FrameNode.html#%3Cinit%3E(int,int,java.lang.Object%5B%5D,int,java.lang.Object%5B%5D)
+                                             */
+                                            stackMapLocalIndex--;
+                                        }
                                     }
                                 }
                             }
@@ -295,28 +341,31 @@ public class App {
                     }
                 }
             }
-        }
-        // No need to recompute max or frames
-        // because we aren't actually changing
-        // the methods
-        ClassWriter classWriter = new ClassWriter(0);
-        cn.accept(classWriter);
- 
-        if (!forceOverwrite && output.toFile().exists()) {
-            Scanner scanner = new Scanner(System.in);
-            System.err.println(String.format("Overwrite the existing file %s? (Y/n)", output.toString()));
-            if (!scanner.hasNext("Y")) {
+            // No need to recompute max or frames
+            // because we aren't actually changing
+            // the methods
+            ClassWriter classWriter = new ClassWriter(0);
+            cn.accept(classWriter);
+
+            if (!forceOverwrite && output.toFile().exists()) {
+                Scanner scanner = new Scanner(System.in);
+                System.err.println(String.format("Overwrite the existing file %s? (Y/n)", output.toString()));
+                if (!scanner.hasNext("Y")) {
+                    scanner.close();
+                    return;
+                }
+                System.out.println(String.format("Overwriting existing file %s", output.toString()));
                 scanner.close();
-                return;
+
             }
-            System.out.println(String.format("Overwriting existing file %s", output.toString()));
-            scanner.close();
 
+            OutputStream dout = Files.newOutputStream(output);
+            dout.write(classWriter.toByteArray());
+            dout.flush();
+            dout.close();
+        } catch (Exception e) {
+            System.err.println("Error while reading " + input.toAbsolutePath() + ", ");
+            throw e;
         }
-
-        OutputStream dout = Files.newOutputStream(output);
-        dout.write(classWriter.toByteArray());
-        dout.flush();
-        dout.close();
     }
 }
